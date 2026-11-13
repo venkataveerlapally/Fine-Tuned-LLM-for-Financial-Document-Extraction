@@ -71,12 +71,6 @@ make loadtest-max              # closed loop, finds max throughput
 - **Serving:** vLLM's continuous batching and PagedAttention give high throughput on one GPU. Prefix caching reuses the shared system prompt. JSON-schema-constrained decoding guarantees valid JSON. FastAPI handles validation, schema conformance and errors.
 - **Latency levers:** compact JSON output (fewer tokens), prefix caching, `--max-num-seqs` tuning, FP8/AWQ quantization, and n-gram speculative decoding (works well for extraction because outputs copy spans from the input).
 
-## Honest notes before putting numbers on a resume
-
-1. **Report what you measure.** Replace 0.72 / 0.91 / 20 req/s / 800 ms with the numbers from `results/*_metrics.json` and `load_test.py`.
-2. **Document count:** gold labels alone give ~1.5k docs. Say "3,000" only if you ran the pseudo-labeling step, and be ready to explain it ("1.5k gold + 1.5k teacher-labeled with grounding filters").
-3. **Latency depends on output length.** A full invoice JSON is often 200–500 tokens. Generating that in under 800 ms at p95 under load is hard on a 7B model. Check `avg_output_tokens` in the eval output and the real p95 from the load test, then write the bullet to match.
-4. **Synthetic data:** the invoices share a uniform template, so F1 may be very high and may not transfer to real invoices. A good extension is evaluating on real documents (e.g. DocILE once you get access, or SROIE).
 
 
 ## Layout
