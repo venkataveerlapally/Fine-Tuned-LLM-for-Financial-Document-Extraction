@@ -60,17 +60,6 @@ make loadtest                  # open loop at 20 req/s, reports p50/p95/p99
 make loadtest-max              # closed loop, finds max throughput
 ```
 
-## Design decisions (interview talking points)
-
-- **Why QLoRA:** the 4-bit base needs ~5 GB instead of ~15 GB, and only ~0.5% of parameters train. A 7B fine-tune fits on one 24 GB card with quality close to full fine-tuning.
-- **Loss masking:** loss is computed only on the JSON answer tokens, not the prompt or OCR text.
-- **Fair baseline:** base and fine-tuned models get the identical prompt, including the JSON template, so the F1 gain comes from fine-tuning, not prompt changes.
-- **Metric:** micro field-level F1 over `(field, normalized value)` pairs. Formatting differences (`$1,250.0` vs `1250.00`, date formats, case) don't count as errors. Line items are compared as a multiset, so order doesn't matter. Invalid JSON counts as all fields missed.
-- **No test leakage:** the test set is 200 gold docs fixed by seed. Pseudo-labels come only from the unlabeled pool and go only into training.
-- **Pseudo-label quality gate:** teacher labels are kept only if ≥90% of extracted values actually appear in the OCR text (grounding check).
-- **Serving:** vLLM's continuous batching and PagedAttention give high throughput on one GPU. Prefix caching reuses the shared system prompt. JSON-schema-constrained decoding guarantees valid JSON. FastAPI handles validation, schema conformance and errors.
-- **Latency levers:** compact JSON output (fewer tokens), prefix caching, `--max-num-seqs` tuning, FP8/AWQ quantization, and n-gram speculative decoding (works well for extraction because outputs copy spans from the input).
-
 
 
 ## Layout
