@@ -78,10 +78,6 @@ make loadtest-max              # closed loop, finds max throughput
 3. **Latency depends on output length.** A full invoice JSON is often 200–500 tokens. Generating that in under 800 ms at p95 under load is hard on a 7B model. Check `avg_output_tokens` in the eval output and the real p95 from the load test, then write the bullet to match.
 4. **Synthetic data:** the invoices share a uniform template, so F1 may be very high and may not transfer to real invoices. A good extension is evaluating on real documents (e.g. DocILE once you get access, or SROIE).
 
-## Resume bullet template
-
-> - Fine-tuned **Qwen2.5-7B** with **QLoRA** on **N** invoices (gold + teacher-labeled), raising field-level extraction F1 from **A** to **B** vs. the prompted base model.
-> - Served via **vLLM** behind **FastAPI** in **Docker** with JSON-schema-constrained decoding, sustaining **R req/s** at **P ms p95** on a single **GPU_NAME**.
 
 ## Layout
 
