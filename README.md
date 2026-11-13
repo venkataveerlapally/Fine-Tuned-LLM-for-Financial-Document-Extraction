@@ -1,2 +1,94 @@
-# Fine-Tuned-LLM-for-Financial-Document-Extraction
-I fine-tuned Qwen2.5-7B with QLoRA on 3,000 financial documents to pull out key fields more reliably than an off-the-shelf model. Extraction F1 went from 0.72 to 0.91.
+# Fine-Tuned LLM for Financial Document Extraction
+
+QLoRA fine-tuning of **Qwen2.5-7B-Instruct** to turn invoice OCR text into structured JSON,
+served with **vLLM + FastAPI + Docker** on a single GPU.
+
+```
+OCR text ──► FastAPI /extract ──► vLLM (fine-tuned Qwen2.5-7B, continuous batching) ──► JSON
+```
+
+| Resume claim | Where it's produced |
+|---|---|
+| Fine-tuned Qwen2.5-7B with QLoRA | `scripts/train_qlora.py` (4-bit NF4 base + LoRA r=16 on all projections) |
+| ~3,000 financial documents | `scripts/prepare_data.py` (≈1.5k gold) + `scripts/pseudo_label.py` (≈1.5k teacher-labeled) |
+| Extraction F1 before → after | `scripts/evaluate.py` on the base vs fine-tuned model, then `scripts/compare.py` |
+| vLLM + Docker + FastAPI | `docker-compose.yml`, `serve/app.py`, `serve/Dockerfile` |
+| X req/s at p95 < Y ms | `scripts/load_test.py --rps 20` |
+
+## Dataset
+
+[High Quality Invoice Images for OCR](https://huggingface.co/datasets/Voxel51/high-quality-invoice-images-for-ocr)
+(8,181 synthetic invoices). About 1,489 have gold JSON labels plus OCR text. Labels cover:
+invoice header (number, dates, seller/client), line items (description, quantity, total
+price), totals (tax, discount, total) and payment info.
+
+The output schema is **inferred from the gold labels** and saved to `artifacts/schema.json`.
+Training, evaluation and serving all read it, so field names are never hard-coded.
+
+## Hardware
+
+- Training: one 24 GB GPU (A10G, L4, RTX 3090/4090). About 1–3 h for 3 epochs on 3k docs.
+- Serving: one 24 GB GPU for the bf16 merged model with `--max-model-len 4096`.
+- Pseudo-labeling (optional): a teacher such as Qwen2.5-72B-Instruct-AWQ needs ~48 GB+, or use any hosted OpenAI-compatible API.
+
+## Run it
+
+```bash
+pip install vllm && pip install -r requirements-train.txt
+make test                      # unit tests for metrics/schema/parsing (CPU only)
+
+# 1. Data
+make data                      # -> data/{train,val,test}.jsonl + artifacts/schema.json
+make pseudo TEACHER_URL=http://teacher:8000/v1   # optional: +~1.5k training docs
+#    spot-check ~50 rows of data/pseudo.jsonl by hand before training!
+
+# 2. Baseline
+make eval-base                 # base Qwen2.5-7B, same prompt -> results/base_metrics.json
+
+# 3. Fine-tune + merge
+make train                     # -> outputs/qlora/adapter
+make merge                     # -> outputs/merged (bf16, ready for vLLM)
+
+# 4. Evaluate
+make eval-ft && make compare   # before/after F1 table, per-field breakdown
+
+# 5. Serve + load test
+make serve                     # docker compose: vLLM :8000, API :8080
+curl -s localhost:8080/extract -H 'content-type: application/json' \
+     -d "{\"text\": $(head -1 data/test.jsonl | python -c 'import json,sys;print(json.dumps(json.loads(sys.stdin.read())["ocr_text"]))')}"
+make loadtest                  # open loop at 20 req/s, reports p50/p95/p99
+make loadtest-max              # closed loop, finds max throughput
+```
+
+## Design decisions (interview talking points)
+
+- **Why QLoRA:** the 4-bit base needs ~5 GB instead of ~15 GB, and only ~0.5% of parameters train. A 7B fine-tune fits on one 24 GB card with quality close to full fine-tuning.
+- **Loss masking:** loss is computed only on the JSON answer tokens, not the prompt or OCR text.
+- **Fair baseline:** base and fine-tuned models get the identical prompt, including the JSON template, so the F1 gain comes from fine-tuning, not prompt changes.
+- **Metric:** micro field-level F1 over `(field, normalized value)` pairs. Formatting differences (`$1,250.0` vs `1250.00`, date formats, case) don't count as errors. Line items are compared as a multiset, so order doesn't matter. Invalid JSON counts as all fields missed.
+- **No test leakage:** the test set is 200 gold docs fixed by seed. Pseudo-labels come only from the unlabeled pool and go only into training.
+- **Pseudo-label quality gate:** teacher labels are kept only if ≥90% of extracted values actually appear in the OCR text (grounding check).
+- **Serving:** vLLM's continuous batching and PagedAttention give high throughput on one GPU. Prefix caching reuses the shared system prompt. JSON-schema-constrained decoding guarantees valid JSON. FastAPI handles validation, schema conformance and errors.
+- **Latency levers:** compact JSON output (fewer tokens), prefix caching, `--max-num-seqs` tuning, FP8/AWQ quantization, and n-gram speculative decoding (works well for extraction because outputs copy spans from the input).
+
+## Honest notes before putting numbers on a resume
+
+1. **Report what you measure.** Replace 0.72 / 0.91 / 20 req/s / 800 ms with the numbers from `results/*_metrics.json` and `load_test.py`.
+2. **Document count:** gold labels alone give ~1.5k docs. Say "3,000" only if you ran the pseudo-labeling step, and be ready to explain it ("1.5k gold + 1.5k teacher-labeled with grounding filters").
+3. **Latency depends on output length.** A full invoice JSON is often 200–500 tokens. Generating that in under 800 ms at p95 under load is hard on a 7B model. Check `avg_output_tokens` in the eval output and the real p95 from the load test, then write the bullet to match.
+4. **Synthetic data:** the invoices share a uniform template, so F1 may be very high and may not transfer to real invoices. A good extension is evaluating on real documents (e.g. DocILE once you get access, or SROIE).
+
+## Resume bullet template
+
+> - Fine-tuned **Qwen2.5-7B** with **QLoRA** on **N** invoices (gold + teacher-labeled), raising field-level extraction F1 from **A** to **B** vs. the prompted base model.
+> - Served via **vLLM** behind **FastAPI** in **Docker** with JSON-schema-constrained decoding, sustaining **R req/s** at **P ms p95** on a single **GPU_NAME**.
+
+## Layout
+
+```
+ie/            schema inference, prompt, JSON parsing, F1 metrics, dataset loader
+scripts/       prepare_data, pseudo_label, train_qlora, merge_lora, evaluate, compare, load_test
+serve/         FastAPI app + Dockerfile
+tests/         unit tests (CPU)
+docker-compose.yml, Makefile
+```
